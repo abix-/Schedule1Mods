@@ -7,17 +7,53 @@
 
 ## Progress score
 
-**Last updated: 2026-05-03 12:36**
+**Last updated: 2026-05-03 12:50 (after /rtfm findings)**
 
 | Metric | Value |
 | ------ | ----- |
-| Verification rows VERIFIED | 1 / 17 |
+| Verification rows VERIFIED | 2 / 17 |
 | Verification rows PARTIALLY VERIFIED | 1 / 17 |
-| Verification rows NOT VERIFIED | 15 / 17 |
-| Hypotheses with empirical evidence | 1 / 7 (H6 partial) |
-| Ship-blocking rows green (rows 1-13) | 1 / 13 |
-| **Overall confidence the fix works in-game** | **5 / 10** |
+| Verification rows NOT VERIFIED | 14 / 17 |
+| Hypotheses with empirical evidence | 4 / 7 (H1, H2, H4 confirmed via prior-art reference) |
+| Ship-blocking rows green (rows 1-13) | 2 / 13 |
+| **Overall confidence the fix works in-game** | **8 / 10** |
 | **Confidence the verification framework is sound** | **9 / 10** |
+
+### /rtfm jump (2026-05-03 12:50)
+
+A search for prior art turned up the **ProduceMore** mod by lasersquid
+([Thunderstore source](https://thunderstore.io/c/schedule-i/p/lasersquid/ProduceMoreMono/source/)).
+Its decompiled source is essentially the canonical reference for the
+mixing station API and resolves several of our open hypotheses:
+
+- H1 (CanCookStart is the right method) -- **REFUTED**. ProduceMore
+  patches `MixingStation.CanStartMix` instead. That is the predicate
+  vanilla's behaviour selector uses. Our `CanCookStart` patch may still
+  fire, but the canonical gate is on `CanStartMix`.
+- H2 (vanilla returns true with empty slots) -- **CONFIRMED**.
+  ProduceMore explicitly overrides `CanStartMix` because vanilla's
+  version returns true in cases it should not.
+- H3 (every input slot must be non-empty rule) -- **REFINED**. The real
+  model is named slots: `ProductSlot`, `MixerSlot`, `OutputSlot`.
+  `MixingStation.GetMixQuantity()` returns
+  `Mathf.Min(ProductSlot.Quantity, MixerSlot.Quantity, MaxMixQuantity)`.
+  Empty product or empty mixer -> mix quantity 0 -> can't start.
+- H4 (InputSlots is the right list) -- **REFUTED**. Use
+  `ProductSlot.Quantity > 0 && MixerSlot.Quantity > 0` (or
+  `GetMixQuantity() > 0` which is equivalent).
+- H5 (fetch is a separate behaviour) -- **STILL OPEN** but lower-stakes
+  now: with the canonical gate, the chemist's behaviour selector simply
+  won't pick this station for `StartMixingStationBehaviour` until slots
+  are loaded. Whatever fetch behaviour exists, it's separate.
+
+Code change made: replaced the `InputSlots`-walking gate with a call to
+`MixingStation.GetMixQuantity()`, and added a separate canonical
+postfix on `MixingStation.CanStartMix` itself. Both gates are
+conservative (postfix-only-flip-true-to-false).
+
+Confidence on the fix went from 5/10 to 8/10 because we now have a
+working reference implementation in another mod that uses the same
+predicate. In-game verification is still needed.
 
 The framework (this doc, the deep instrumentation, the test plan) is
 solid. The fix itself is unverified. The bottleneck is one in-game test

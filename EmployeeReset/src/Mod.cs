@@ -62,6 +62,7 @@ public class Mod : MelonMod
 
         TryInstrumentCookRoutine();
         TryPatchCanCookStartIngredientGate();
+        TryPatchCanStartMixIngredientGate();
         TryInstrumentCookFlow();
 
         MelonLogger.Msg($"EmployeeReset 0.1.0 initialized; hotkey={_hotkeyPref.Value}");
@@ -253,9 +254,70 @@ public class Mod : MelonMod
     private const int _gateLogLimit = 20;
 
     /// <summary>
-    /// Postfix that checks station.InputSlots for any empty slot. If any
-    /// is empty, override __result to false. Fail open: if our check
-    /// throws, leave vanilla's answer alone.
+    /// The canonical fix per ProduceMore mod: postfix MixingStation.CanStartMix
+    /// to require ProductSlot and MixerSlot have items. Reference behaviour:
+    /// __result = (GetMixQuantity() > 0) && (OutputSlot.Quantity == 0)
+    /// Our version is conservative: only flip true to false; never override
+    /// vanilla's false to true.
+    /// </summary>
+    private void TryPatchCanStartMixIngredientGate()
+    {
+        try
+        {
+            MethodInfo target = typeof(MixingStation).GetMethod(
+                "CanStartMix",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (target == null)
+            {
+                MelonLogger.Warning("MixingStation.CanStartMix not found; canonical gate not installed");
+                return;
+            }
+            MethodInfo postfix = typeof(Mod).GetMethod(nameof(CanStartMixIngredientGatePostfix),
+                BindingFlags.Static | BindingFlags.NonPublic);
+            HarmonyInstance.Patch(target, postfix: new HarmonyMethod(postfix));
+            MelonLogger.Msg("Canonical ingredient gate installed on MixingStation.CanStartMix");
+        }
+        catch (Exception ex)
+        {
+            MelonLogger.Error($"TryPatchCanStartMixIngredientGate failed: {ex}");
+        }
+    }
+
+    private static void CanStartMixIngredientGatePostfix(MixingStation __instance, ref bool __result)
+    {
+        if (!__result) return;
+        if (__instance == null) return;
+        try
+        {
+            int q = 0;
+            try { q = __instance.GetMixQuantity(); } catch { }
+            if (q <= 0)
+            {
+                __result = false;
+                if (_verboseLogPref?.Value == true && _gateLogCount < _gateLogLimit)
+                {
+                    _gateLogCount++;
+                    string n = "?";
+                    try { n = __instance.Name; } catch { }
+                    int p = -1, m = -1, o = -1;
+                    try { p = __instance.ProductSlot != null ? __instance.ProductSlot.Quantity : -2; } catch { }
+                    try { m = __instance.MixerSlot != null ? __instance.MixerSlot.Quantity : -2; } catch { }
+                    try { o = __instance.OutputSlot != null ? __instance.OutputSlot.Quantity : -2; } catch { }
+                    MelonLogger.Msg($"[IngredientGate] CanStartMix BLOCK on '{n}': product={p} mixer={m} output={o} mixQty={q}");
+                }
+            }
+        }
+        catch
+        {
+            // Fail open
+        }
+    }
+
+    /// <summary>
+    /// Postfix that uses the canonical MixingStation slot model:
+    /// ProductSlot + MixerSlot must both have Quantity > 0 (the same check
+    /// MixingStation.GetMixQuantity() uses). Reference: ProduceMore mod
+    /// by lasersquid demonstrates these are the slots that matter.
     /// </summary>
     private static void CanCookStartIngredientGatePostfix(StartMixingStationBehaviour __instance, ref bool __result)
     {
@@ -266,23 +328,15 @@ public class Mod : MelonMod
             MixingStation station = __instance.targetStation;
             if (station == null) return;
 
-            Il2CppSystem.Collections.Generic.List<ItemSlot> slots = station.InputSlots;
-            if (slots == null || slots.Count == 0)
+            // Use GetMixQuantity which is min(ProductSlot.Quantity, MixerSlot.Quantity, MaxMixQuantity).
+            // If either input slot is empty, this returns 0.
+            int mixQty = 0;
+            try { mixQty = station.GetMixQuantity(); } catch { }
+            if (mixQty <= 0)
             {
                 __result = false;
-                MaybeLogGate(__instance, "no input slots");
+                MaybeLogGate(__instance, "GetMixQuantity()=0");
                 return;
-            }
-
-            for (int i = 0; i < slots.Count; i++)
-            {
-                ItemSlot slot = slots[i];
-                if (slot == null || slot.Quantity <= 0)
-                {
-                    __result = false;
-                    MaybeLogGate(__instance, $"slot {i} empty");
-                    return;
-                }
             }
         }
         catch (Exception ex)
