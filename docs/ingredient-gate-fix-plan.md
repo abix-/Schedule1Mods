@@ -270,9 +270,10 @@ To investigate during Phase 1, address as scope expands:
 | 1 -- reconnaissance | Done. `MixingStationConfiguration` has no recipe field; the slots are named (`ProductSlot`, `MixerSlot`, `OutputSlot`) not a generic `InputSlots` |
 | 1.5 -- /rtfm prior art | Done. ProduceMore mod's decompiled source confirmed the canonical predicate: `MixingStation.GetMixQuantity() > 0`. Their patch site is `MixingStation.CanStartMix`, not `StartMixingStationBehaviour.CanCookStart` |
 | 2 -- predicate design | Done (revised after /rtfm). Use `station.GetMixQuantity() <= 0` as the "block this" condition |
-| 3 -- Harmony wiring | Built. Two postfixes installed: `MixingStation.CanStartMix` (canonical) and `StartMixingStationBehaviour.CanCookStart` (belt). Both use the same predicate |
+| 3 -- Harmony wiring | Done (revised iteration 11). Single postfix on `MixingStation.CanStartMix` only. The CanCookStart belt patch was removed because it over-blocked the chemist's "move output" task |
 | 4 -- caching | Skipped. Each check is O(1) -- one call to GetMixQuantity. No cache needed |
-| 5 -- validation | Pending. Build is ready to deploy; awaiting in-game test |
+| 5 -- validation | Pending. Build is deployed; awaiting test on the existing save with output items waiting |
 | 6 -- edge cases | Open: networked-multiplayer (`RpcLogic___StartCook_2166136261`), MixingStationMk2 variant |
+| 7 -- regressions encountered | Iteration 10: deep instrumentation crashed game on launch. Iteration 11: CanCookStart belt patch over-blocked move-output. Iteration 12: targetStation null write in SmartReset stranded chemists with no station to interact with. All three regressions were over-aggressive; the right answer in each case was to remove a patch or write |
 
 Update this table as each phase completes.

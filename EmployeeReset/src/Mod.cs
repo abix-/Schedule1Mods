@@ -60,10 +60,15 @@ public class Mod : MelonMod
         if (_hookEMployeePref.Value)
             TryHookEMployee();
 
-        TryInstrumentCookRoutine();
-        TryPatchCanCookStartIngredientGate();
+        // Deep instrumentation removed in iteration 10 -- caused 0xc0000005
+        // crash on game launch. CanCookStart postfix removed in iteration 11
+        // because it was over-blocking the chemist's "move output to
+        // destination" behaviour: when inputs were empty but output had
+        // items, our gate said the chemist couldn't interact with the
+        // station at all, so they reported "nothing to do" instead of
+        // moving the output. Keep only the canonical CanStartMix gate
+        // (per ProduceMore reference).
         TryPatchCanStartMixIngredientGate();
-        TryInstrumentCookFlow();
 
         MelonLogger.Msg($"EmployeeReset 0.1.0 initialized; hotkey={_hotkeyPref.Value}");
     }
@@ -693,37 +698,14 @@ public class Mod : MelonMod
                         Log(true, $"[Reset] {who}: typed Deactivate() threw {ex.Message}");
                     }
 
-                    // Null targetStation. Iteration-5 instrumentation showed
-                    // vanilla's behaviour selector re-activates the cook
-                    // ~600ms after our reset because the chemist still had
-                    // this station as their target. Without a target,
-                    // CanCookStart should return false until vanilla
-                    // re-assigns the chemist (typically a player action).
-                    try
-                    {
-                        PropertyInfo backingProp = typedCook.GetType().GetProperty(
-                            "_targetStation_k__BackingField",
-                            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                        if (backingProp != null && backingProp.CanWrite)
-                        {
-                            backingProp.SetValue(typedCook, null);
-                            didAnything = true;
-                            Log(_verboseLogPref?.Value == true,
-                                $"[Reset] {who}: nulled _targetStation_k__BackingField on chemist's StartMixingStationBehaviour");
-                        }
-                        else
-                        {
-                            // Fallback: try the typed property setter.
-                            typedCook.targetStation = null;
-                            didAnything = true;
-                            Log(_verboseLogPref?.Value == true,
-                                $"[Reset] {who}: nulled targetStation via typed setter");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Log(true, $"[Reset] {who}: null targetStation threw {ex.Message}");
-                    }
+                    // ITERATION 12: do NOT null targetStation. The canonical
+                    // CanStartMix gate now prevents new wedges from starting,
+                    // so we no longer need to forcibly disconnect the
+                    // chemist from their station. Vanilla uses targetStation
+                    // for BOTH "cook here" AND "move output from here"; if
+                    // we null it the chemist has no station to interact with
+                    // and reports "nothing to do" even when output items
+                    // need to be moved.
                 }
             }
 

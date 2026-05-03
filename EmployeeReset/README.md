@@ -160,9 +160,13 @@ For each chemist (other roles are skipped on F8), in order:
    - `targetStation.CurrentMixOperation = null` -- clear in-progress mix.
    - `StopAllCoroutines()` -- final guard against running coroutines.
    - `Deactivate()` -- vanilla's stop-being-active cleanup hook.
-   - Null `_targetStation_k__BackingField` -- prevent re-pick.
+   - **Note (iteration 12):** we previously nulled
+     `_targetStation_k__BackingField` here, but that broke the
+     chemist's "move output" task. Removed -- the canonical
+     `MixingStation.CanStartMix` gate now prevents new wedges
+     without needing to disconnect the chemist from the station.
 3. If the active behaviour is `StartMixingStationBehaviour`, run the
-   same five operations on the active reference (belt-and-suspenders).
+   same operations on the active reference (belt-and-suspenders).
 4. HAMMER `StopAllCoroutines()` on every MonoBehaviour on the chemist's
    GameObject. The wedged coroutine may be hosted on Chemist, Employee,
    or NPC base, not just on `StartMixingStationBehaviour`.

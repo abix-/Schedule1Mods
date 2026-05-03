@@ -19,6 +19,29 @@
 | **Overall confidence the fix works in-game** | **8 / 10** |
 | **Confidence the verification framework is sound** | **9 / 10** |
 
+### Iteration 12 (2026-05-03 17:30)
+
+After deploying iteration 11 we discovered a regression: chemists with
+output items waiting on a mixing bench wouldn't go grab them. Worker
+status read "nothing to do."
+
+Root cause: our SmartReset was nulling `_targetStation_k__BackingField`
+on the chemist's `StartMixingStationBehaviour`. We added that write in
+iteration 6 to prevent vanilla from auto-re-assigning the cook to the
+same wedged station. But `targetStation` is used by vanilla for BOTH
+"cook here" AND "move output from here". Nulling it strands the
+chemist with no station to interact with for ANY task.
+
+Iteration 12 removes the `_targetStation_k__BackingField` null write
+from the typed-cook cleanup path. The canonical `CanStartMix` gate
+(iteration 9) now prevents new wedges from starting -- we no longer
+need to forcibly disconnect the chemist from their station.
+
+This means the existing save should now work without restart. Vanilla
+serializes `targetStation` correctly across save/load; our reset chain
+no longer overwrites it; vanilla's behaviour selector picks
+"move output" when output items are waiting.
+
 ### /rtfm jump (2026-05-03 12:50)
 
 A search for prior art turned up the **ProduceMore** mod by lasersquid
@@ -192,9 +215,12 @@ Each has an associated test that would either confirm or refute it.
 | 2026-05-03 12:12 | iteration 4 (CurrentMixOperation cleared) | F8 | Same pause-resume; NRE persisted | log slice in chat |
 | 2026-05-03 12:23 | iteration 5 (instrumentation added) | F8 | Diagnostic logs revealed targetStation re-assigned within 200ms of our null write | log slice in chat |
 | 2026-05-03 12:32 | iteration 6 (null targetStation) | F8 | targetStation=null at t+200ms then re-assigned at t+400ms; new CookRoutine fires; NRE persisted | log slice in chat |
-| TBD | iteration 8 (ingredient gate + deep instrumentation) | Deploy + game launch + F8 | Pending | -- |
-| TBD | iteration 8 | Restock test (chemist with empty station, then player adds ingredients) | Pending | -- |
-| TBD | iteration 8 | Healthy test (chemist with full storage, runs normally for several minutes) | Pending | -- |
+| 2026-05-03 13:57 | iteration 9 (full deep instrumentation + canonical CanStartMix gate) | Game launch | **CRASH** -- 0xc0000005 native access violation on game startup, before any save loaded | Windows error dialog |
+| 2026-05-03 14:01 | iteration 10 (deep instrumentation removed) | Game launch + save load | Game launched cleanly; all init lines logged. Three workers got reset on save load via eMployee postfix; full reset chain ran with no NRE. Chemists were stuck on "no locker" WorkIssue rather than ingredient wedge so the gate never fired in this run | log `26-5-3_14-1-3.log` |
+| 2026-05-03 17:08 | iteration 11 (CanCookStart belt removed) | Save load + F8 | `[Inspect]` showed chemists in IdleBehaviour with `targetStation=null`. User-reported regression: chemist won't grab the output from a mixing bench, eMployee status panel says "nothing to do". Diagnosis: our SmartReset's `_targetStation_k__BackingField=null` write strands the chemist with no station to interact with for ANY task | log `26-5-3_17-8-15.log` |
+| TBD | iteration 12 (targetStation null write removed) | Save load + verify chemist moves output | Pending | -- |
+| TBD | iteration 12 | Wedged-cook test with empty input slots | Pending | -- |
+| TBD | iteration 12 | Healthy operation (full storage, multi-minute) | Pending | -- |
 
 ## Threshold for "ready to ship"
 
