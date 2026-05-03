@@ -130,45 +130,38 @@ written. We do not need to:
   iterations; caching may still help but is not load-bearing for
   performance).
 
-## Phase 2 -- predicate design (revised after Phase 1)
+## Phase 2 -- predicate design (final, after /rtfm)
+
+The /rtfm pass against ProduceMore (Thunderstore decompiled source)
+revealed the canonical predicate. The original "walk InputSlots" idea
+is wrong -- `InputSlots` on a MixingStation is a virtual override
+whose contents we never confirmed. The actual model is named slots:
+`ProductSlot` and `MixerSlot`. The predicate is:
 
 ```csharp
-static bool HasInputSlotsLoaded(StartMixingStationBehaviour cookBehaviour)
+static bool CanMix(MixingStation station)
 {
-    if (cookBehaviour == null) return false;
-    MixingStation station = cookBehaviour.targetStation;
     if (station == null) return false;
-
-    var slots = station.InputSlots;
-    if (slots == null || slots.Count == 0) return false;
-
-    for (int i = 0; i < slots.Count; i++)
-    {
-        ItemSlot slot = slots[i];
-        if (slot == null) return false;
-        if (slot.Quantity <= 0) return false;   // empty slot -> can't mix
-    }
-    return true;
+    return station.GetMixQuantity() > 0;
+    // GetMixQuantity returns Mathf.Min(
+    //   ProductSlot.Quantity,
+    //   MixerSlot.Quantity,
+    //   MaxMixQuantity
+    // )
 }
 ```
 
-Semantics: "every input slot on the assigned station has at least one
-item." If any input slot is empty, the chemist cannot run a mix
-iteration that consumes from it -- so we block the cook.
-
-This is strict: if the player set up a station with three input slots
-but only two are needed for the current product, the third (empty) slot
-will block the cook. If that proves to be a problem, refine to "every
-slot that has been used by this station has Quantity > 0" or "the
-station has any complete combination of items that maps to a known
-output" -- but start with the strict version.
+Semantics: "the station has at least one product unit AND at least one
+mixer unit AND has not hit its max-batch limit." If any of those is
+zero, GetMixQuantity returns 0 and the chemist should not start a new
+mix.
 
 Per-iteration completeness: not checked here. The cook may still wedge
 if a slot drains to zero mid-cook before the cook completes. The
 behaviour selector should re-evaluate after each cook iteration; on the
-next eval our predicate would see the empty slot and block the next
-attempt. The wedged in-progress cook still has to be killed by the F8
-hotkey for now -- the predicate prevents future wedges but does not
+next eval our predicate would see GetMixQuantity == 0 and block the
+next attempt. An already-wedged in-progress cook still has to be killed
+by the F8 hotkey -- the predicate prevents future wedges but does not
 unwedge an existing one.
 
 ## Phase 3 -- Harmony wiring
@@ -274,11 +267,12 @@ To investigate during Phase 1, address as scope expands:
 | Phase | Status |
 | ----- | ------ |
 | 0 -- cleanup | Done. Cooldown code removed from `EmployeeReset/src/Mod.cs` |
-| 1 -- reconnaissance | Done. `MixingStationConfiguration` has no recipe field; check uses `MixingStation.InputSlots` directly |
-| 2 -- predicate design | Done. Strict "every input slot has Quantity > 0" predicate |
-| 3 -- Harmony wiring | Built. Postfix on `StartMixingStationBehaviour.CanCookStart` installed in `OnInitializeMelon` |
-| 4 -- caching | Skipped. The check is O(InputSlots) ~= 2-3 iterations; cache only if perf becomes an issue |
+| 1 -- reconnaissance | Done. `MixingStationConfiguration` has no recipe field; the slots are named (`ProductSlot`, `MixerSlot`, `OutputSlot`) not a generic `InputSlots` |
+| 1.5 -- /rtfm prior art | Done. ProduceMore mod's decompiled source confirmed the canonical predicate: `MixingStation.GetMixQuantity() > 0`. Their patch site is `MixingStation.CanStartMix`, not `StartMixingStationBehaviour.CanCookStart` |
+| 2 -- predicate design | Done (revised after /rtfm). Use `station.GetMixQuantity() <= 0` as the "block this" condition |
+| 3 -- Harmony wiring | Built. Two postfixes installed: `MixingStation.CanStartMix` (canonical) and `StartMixingStationBehaviour.CanCookStart` (belt). Both use the same predicate |
+| 4 -- caching | Skipped. Each check is O(1) -- one call to GetMixQuantity. No cache needed |
 | 5 -- validation | Pending. Build is ready to deploy; awaiting in-game test |
-| 6 -- edge cases | Open: legitimately-empty extra slots, batch consumption, cross-property routes |
+| 6 -- edge cases | Open: networked-multiplayer (`RpcLogic___StartCook_2166136261`), MixingStationMk2 variant |
 
 Update this table as each phase completes.

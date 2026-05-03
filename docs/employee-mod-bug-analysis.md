@@ -1245,7 +1245,8 @@ exposed the next missing piece:
 | 5 (instrumentation added) | -- | Harmony-prefix on CookRoutine.MoveNext + post-F8 inspect coroutine sampling at 200ms intervals reveals: vanilla auto-re-assigns `targetStation` within ~200ms of our null write, then activates a fresh `StartMixingStationBehaviour` at t+400ms, fresh CookRoutine starts at t+790ms (different state-machine hash from before our reset), state 1 NRE again at t+1290ms | Instrumentation only; no fix yet |
 | 6 (null targetStation) | Inspect log shows targetStation=null at t+200ms then targetStation=Mixing Station at t+400ms; cook re-activates anyway | Vanilla's behaviour selector re-derives `targetStation` from `MixingStationConfiguration` every evaluation tick. Writing null to the chemist's targetStation is overwritten by vanilla within ~200ms. The configuration-level assignment is sticky and we cannot remove it without losing the player's setup | Identified the actual root cause: vanilla's `CanCookStart()` returns true even when ingredient reachability cannot be satisfied |
 | 7 (cooldown via CanCookStart prefix) | Built but rejected by user before testing | User: "I don't need a cooking cooldown. I need mixing to NOT occur unless there's ingredients." Cooldown was a workaround, not a fix | Reverted: cooldown code removed |
-| 8 (ingredient gate via CanCookStart postfix) | Built, deploy pending | Phase 1 decompile of `MixingStationConfiguration` revealed there is no recipe field; "ingredients" are the items in `MixingStation.InputSlots`. Postfix `CanCookStart` to return false when any input slot has Quantity == 0. Vanilla's selector then picks IdleBehaviour, chemist stops, no manual intervention needed | See `ingredient-gate-fix-plan.md` |
+| 8 (ingredient gate via CanCookStart postfix) | Built but predicate was wrong (`InputSlots` is not the right list) | Phase 1 decompile of `MixingStationConfiguration` revealed there is no recipe field; assumed "ingredients" lived in `MixingStation.InputSlots` collection | See `ingredient-gate-fix-plan.md` |
+| 9 (canonical CanStartMix gate via GetMixQuantity, /rtfm-driven) | Built, deploy pending | /rtfm pass against [ProduceMore mod](https://thunderstore.io/c/schedule-i/p/lasersquid/ProduceMoreMono/source/) revealed the real model: named slots `ProductSlot` / `MixerSlot` / `OutputSlot`, and the canonical predicate is `MixingStation.GetMixQuantity() > 0`. ProduceMore patches `MixingStation.CanStartMix`, not `CanCookStart` | We now patch both `CanStartMix` (canonical) and `CanCookStart` (belt) with the same predicate |
 
 Each iteration corresponds to one F8 press in the actual game with logs
 captured. The "pause then resume" pattern in iteration 3 was the cleanest
@@ -1338,68 +1339,80 @@ intervention. No cooldown. No timeout. No state.
 Phase 1 reconnaissance (decompiling `MixingStationConfiguration`,
 `MixingStation`, `ItemSlot`) revealed that **Schedule I does not have a
 formal recipe object with an ingredient list.** The "recipe" is implicit:
-defined by what items the player has loaded into the station's input
-slots. `MixingStationConfiguration` only carries
-`AssignedChemist`, `Destination`, `StartThrehold` (sic), and
+defined by what items the player has loaded into the station's two named
+slots (`ProductSlot` and `MixerSlot`). `MixingStationConfiguration` only
+carries `AssignedChemist`, `Destination`, `StartThrehold` (sic), and
 `DestinationRoute` -- no recipe field.
 
-So the bug is even narrower than originally framed: the chemist is at
-the station with one or more `MixingStation.InputSlots` empty, and
-vanilla's `CanCookStart` returns true anyway. The cook starts, hits the
-empty slot, wedges.
-
-The check is simply: every input slot must have `Quantity > 0`. If any
-slot is empty, block the cook.
-
-#### Implementation
+A subsequent /rtfm pass against the Schedule I mod ecosystem (see the
+ProduceMore mod's [decompiled source](https://thunderstore.io/c/schedule-i/p/lasersquid/ProduceMoreMono/source/))
+confirmed the canonical predicate:
 
 ```csharp
+station.GetMixQuantity()  // Mathf.Min(ProductSlot.Quantity, MixerSlot.Quantity, MaxMixQuantity)
+```
+
+If `GetMixQuantity()` returns 0, either input slot is empty or the
+station is at capacity. That is the "can I mix right now?" check
+vanilla itself uses internally; vanilla's `MixingStation.CanStartMix`
+should call it but apparently does not enforce it correctly, which is
+why ProduceMore overrides `CanStartMix` to:
+
+```csharp
+__result = station.GetMixQuantity() > 0 && station.OutputSlot.Quantity == 0;
+```
+
+Our gate uses the same predicate. We patch it as a postfix that only
+flips `true` to `false` -- never the other way -- so we cannot make the
+chemist over-eager.
+
+#### Implementation (current)
+
+Two postfixes, belt-and-suspenders:
+
+```csharp
+// Canonical: matches the predicate ProduceMore uses
+[HarmonyPatch(typeof(MixingStation), "CanStartMix")]
+class CanStartMixIngredientGate
+{
+    static void Postfix(MixingStation __instance, ref bool __result)
+    {
+        if (!__result) return;
+        if (__instance == null) return;
+        if (__instance.GetMixQuantity() <= 0)
+            __result = false;
+    }
+}
+
+// Belt: in case some vanilla code path uses CanCookStart directly
 [HarmonyPatch(typeof(StartMixingStationBehaviour), "CanCookStart")]
 class CanCookStartIngredientGate
 {
     static void Postfix(StartMixingStationBehaviour __instance, ref bool __result)
     {
-        if (!__result) return;                  // never override false to true
+        if (!__result) return;
         if (__instance == null) return;
-        try
-        {
-            MixingStation station = __instance.targetStation;
-            if (station == null) return;
-            var slots = station.InputSlots;
-            if (slots == null || slots.Count == 0)
-            {
-                __result = false;
-                return;
-            }
-            for (int i = 0; i < slots.Count; i++)
-            {
-                ItemSlot slot = slots[i];
-                if (slot == null || slot.Quantity <= 0)
-                {
-                    __result = false;
-                    return;
-                }
-            }
-        }
-        catch
-        {
-            // Fail open; defer to vanilla on error.
-        }
+        MixingStation station = __instance.targetStation;
+        if (station != null && station.GetMixQuantity() <= 0)
+            __result = false;
     }
 }
 ```
 
-The check is O(InputSlots.Count), typically 2-3 iterations. No cache
-needed at this level. If perf becomes a concern, memoize on
-`(stationId, slotsHash)` for ~0.5 s.
+Both gates are O(1) (one virtual call into the engine for
+`GetMixQuantity`). No caching needed.
 
 Postfix, not prefix. Vanilla makes the call, we only override `true` to
-`false` when slots are empty. We never override `false` to `true`.
+`false` when slots are empty. We never override `false` to `true`. The
+chemist can become more conservative because of us, never more eager.
 
-The postfix is installed in `EmployeeReset.Mod.OnInitializeMelon` via
+The postfixes are installed in `EmployeeReset.Mod.OnInitializeMelon` via
+`TryPatchCanStartMixIngredientGate()` and
 `TryPatchCanCookStartIngredientGate()`. See
-[`docs/ingredient-gate-fix-plan.md`](ingredient-gate-fix-plan.md) for
-the full plan and Phase 1 findings.
+[`ingredient-gate-fix-plan.md`](ingredient-gate-fix-plan.md) for
+the full plan and Phase 1 findings, and
+[`certainty-tracking.md`](certainty-tracking.md) for the verification
+status.
 
 ### Approaches we rejected and why
 

@@ -115,21 +115,33 @@ Requirements:
 
 ## Technical: ingredient gate
 
-Vanilla `StartMixingStationBehaviour.CanCookStart()` returns true when
-the station is configured and the chemist is on shift, regardless of
-whether the input slots actually contain ingredients. So when the slots
-empty out, vanilla still tells the chemist "yes, cook here" -- the cook
-starts, immediately wedges on an empty slot, and stays wedged.
+Vanilla's mixing station has two named slots that hold the inputs:
+`MixingStation.ProductSlot` and `MixingStation.MixerSlot`. The
+canonical "can I mix right now?" check is
+`MixingStation.GetMixQuantity()`, which returns
+`Mathf.Min(ProductSlot.Quantity, MixerSlot.Quantity, MaxMixQuantity)`.
+If either slot is empty, GetMixQuantity returns 0.
 
-Our Harmony postfix walks `MixingStation.InputSlots` and overrides the
-result to `false` if any slot has `Quantity <= 0`.
+Despite this, vanilla's `MixingStation.CanStartMix` and
+`StartMixingStationBehaviour.CanCookStart` apparently still return true
+in cases where they should not -- the chemist starts a cook, immediately
+wedges on an empty slot, and stays wedged.
 
-Postfix-not-prefix means we can only flip `true` to `false`. We never
-override vanilla's `false`. The chemist can never become *more* eager
-because of us, only more conservative.
+We install two Harmony postfixes:
 
-The check runs every behaviour-evaluation tick (~10-30 Hz per chemist),
-no caching. It is O(InputSlots.Count), typically 2-3 iterations. Cheap.
+1. **`MixingStation.CanStartMix`** -- the canonical patch, matching the
+   predicate the [ProduceMore mod](https://thunderstore.io/c/schedule-i/p/lasersquid/ProduceMoreMono/source/)
+   uses. Override `true` to `false` when `GetMixQuantity() <= 0`.
+2. **`StartMixingStationBehaviour.CanCookStart`** -- belt to the above
+   suspenders. Same predicate, in case some vanilla code path calls
+   CanCookStart directly without going through CanStartMix.
+
+Both postfixes only ever flip `true` to `false`. We never override
+vanilla's `false`. The chemist can never become more eager because of
+us, only more conservative.
+
+Each check is O(1) -- a single call into `GetMixQuantity()`. No caching
+needed.
 
 ## Technical: smart-reset (F8)
 
@@ -188,12 +200,19 @@ Schedule I 0.4.5f2:
 - `Il2CppScheduleOne.NPCs.Behaviour.StartMixingStationBehaviour.targetStation` (property)
 - `Il2CppScheduleOne.NPCs.Behaviour.StartMixingStationBehaviour.StopCook()` (method)
 - `Il2CppScheduleOne.NPCs.Behaviour.StartMixingStationBehaviour.Deactivate()` (override of base virtual)
-- `Il2CppScheduleOne.NPCs.Behaviour.StartMixingStationBehaviour.CanCookStart()` (method, target of ingredient-gate postfix)
+- `Il2CppScheduleOne.NPCs.Behaviour.StartMixingStationBehaviour.CanCookStart()` (method, secondary ingredient-gate target)
+- `Il2CppScheduleOne.ObjectScripts.MixingStation.CanStartMix` (method, primary ingredient-gate target)
+- `Il2CppScheduleOne.ObjectScripts.MixingStation.GetMixQuantity()` (method, returns `min(ProductSlot.Quantity, MixerSlot.Quantity, MaxMixQuantity)`)
+- `Il2CppScheduleOne.ObjectScripts.MixingStation.ProductSlot` (property -> ItemSlot)
+- `Il2CppScheduleOne.ObjectScripts.MixingStation.MixerSlot` (property -> ItemSlot)
+- `Il2CppScheduleOne.ObjectScripts.MixingStation.OutputSlot` (property -> ItemSlot)
 - `Il2CppScheduleOne.ObjectScripts.MixingStation.NPCUserObject` (property -> NetworkObject)
 - `Il2CppScheduleOne.ObjectScripts.MixingStation.CurrentMixOperation` (property -> MixOperation)
 - `Il2CppScheduleOne.ObjectScripts.MixingStation.SetNPCUser(NetworkObject)` (method)
-- `Il2CppScheduleOne.ObjectScripts.MixingStation.InputSlots` (property -> List<ItemSlot>)
 - `Il2CppScheduleOne.ItemFramework.ItemSlot.Quantity` (property)
+
+Mixing-station API confirmed against the [ProduceMore mod's
+decompiled source](https://thunderstore.io/c/schedule-i/p/lasersquid/ProduceMoreMono/source/) on Thunderstore.
 
 ## Related docs
 
