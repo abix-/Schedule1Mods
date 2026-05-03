@@ -52,13 +52,25 @@ public class Mod : MelonMod
         _prefs = MelonPreferences.CreateCategory(PrefCategory, "Employee Reset");
         _hotkeyPref       = _prefs.CreateEntry("Hotkey", KeyCode.F8,
             "Hotkey", "Press to smart-reset all stuck employees on the current property");
-        _hookEMployeePref = _prefs.CreateEntry("HookEMployeeAutoReset", true,
-            "Hook eMployee AUTO-RESET", "If true, our smart cleanup also runs after eMployee's ResetEmployeeCore");
+        // ITERATION 14: default to FALSE. Recovered IL from Cpp2IL revealed
+        // that our SmartReset's StopCook and Deactivate calls internally
+        // invoke MixingStation.SetNPCUser(null), nulling station state
+        // vanilla expects intact. When SmartReset runs on every save load
+        // (via eMployee's STUCK-DIAG -> AUTO-RESET path), we corrupt the
+        // chemist's bench every time. Default off; opt-in for users who
+        // genuinely need the post-eMployee cleanup.
+        _hookEMployeePref = _prefs.CreateEntry("HookEMployeeAutoReset", false,
+            "Hook eMployee AUTO-RESET", "If true, our smart cleanup also runs after eMployee's ResetEmployeeCore. Off by default because SmartReset's StopCook+Deactivate calls null station NPCUserObject as a vanilla side-effect, which can break move-output tasks.");
         _verboseLogPref   = _prefs.CreateEntry("VerboseLog", true,
             "Verbose Log", "Log every reset step");
 
-        if (_hookEMployeePref.Value)
-            TryHookEMployee();
+        // ITERATION 14: hard-disable the eMployee postfix regardless of pref.
+        // Recovered IL revealed our SmartReset's StopCook and Deactivate calls
+        // internally null MixingStation.NPCUserObject. Auto-running on every
+        // save load corrupts station state. Re-enable in a future iteration
+        // with safer SmartReset internals.
+        // if (_hookEMployeePref.Value)
+        //     TryHookEMployee();
 
         // Deep instrumentation removed in iteration 10 -- caused 0xc0000005
         // crash on game launch. CanCookStart postfix removed in iteration 11
@@ -626,40 +638,15 @@ public class Mod : MelonMod
                         Log(true, $"[Reset] {who}: typed StopCook() threw {ex.Message}");
                     }
 
-                    MixingStation typedStation = typedCook.targetStation;
-                    if (typedStation != null)
-                    {
-                        try
-                        {
-                            typedStation.SetNPCUser(null);
-                            didAnything = true;
-                            Log(_verboseLogPref?.Value == true,
-                                $"[Reset] {who}: typed SetNPCUser(null) on '{typedStation.Name}'");
-                        }
-                        catch (Exception ex)
-                        {
-                            Log(true, $"[Reset] {who}: typed SetNPCUser(null) threw {ex.Message}");
-                        }
-
-                        // CurrentMixOperation is the station's "in-progress
-                        // cook" reference (line 1560 of decompiled
-                        // MixingStation). Without nulling this, vanilla's
-                        // behaviour selector sees an active mix operation and
-                        // immediately re-picks StartMixingStationBehaviour
-                        // after our reset, putting the chemist right back in
-                        // the wedged cook.
-                        try
-                        {
-                            typedStation.CurrentMixOperation = null;
-                            didAnything = true;
-                            Log(_verboseLogPref?.Value == true,
-                                $"[Reset] {who}: typed CurrentMixOperation=null on '{typedStation.Name}'");
-                        }
-                        catch (Exception ex)
-                        {
-                            Log(true, $"[Reset] {who}: typed CurrentMixOperation=null threw {ex.Message}");
-                        }
-                    }
+                    // ITERATION 13: do NOT null SetNPCUser or CurrentMixOperation.
+                    // Vanilla's "is this station ready to move output?"
+                    // predicate appears to use station state (NPCUserObject,
+                    // CurrentMixOperation, OutputSlot.Quantity) to decide.
+                    // Aggressively nulling these in our reset breaks the
+                    // move-output task, leaving the chemist with output ready
+                    // but no behaviour to handle it. The canonical CanStartMix
+                    // gate prevents new wedges from starting; we no longer
+                    // need to forcibly clear station state.
 
                     // Stop coroutines on the chemist's MixingStationBehaviour
                     // MonoBehaviour regardless of active state.
@@ -737,37 +724,8 @@ public class Mod : MelonMod
                         Log(true, $"[Reset] {who}: StopCook() threw {ex.Message}");
                     }
 
-                    // 1b. Belt-and-suspenders: if station is still alive and
-                    //     still references some NPC, null NPCUserObject. Safe
-                    //     even if StopCook already did this.
-                    if (station != null)
-                    {
-                        try
-                        {
-                            station.SetNPCUser(null);
-                            didAnything = true;
-                            Log(_verboseLogPref?.Value == true,
-                                $"[Reset] {who}: cleared MixingStation.NPCUserObject on '{station.Name}'");
-                        }
-                        catch (Exception ex)
-                        {
-                            Log(true, $"[Reset] {who}: SetNPCUser(null) threw {ex.Message}");
-                        }
-
-                        // Clear the station's in-progress mix operation so
-                        // vanilla does not immediately re-pick this cook.
-                        try
-                        {
-                            station.CurrentMixOperation = null;
-                            didAnything = true;
-                            Log(_verboseLogPref?.Value == true,
-                                $"[Reset] {who}: CurrentMixOperation=null on '{station.Name}'");
-                        }
-                        catch (Exception ex)
-                        {
-                            Log(true, $"[Reset] {who}: CurrentMixOperation=null threw {ex.Message}");
-                        }
-                    }
+                    // ITERATION 13: do NOT null SetNPCUser or CurrentMixOperation
+                    // here either. Same reasoning as the typed-cook path above.
                 }
 
                 // 2. Stop the active behaviour's coroutines as a final guard

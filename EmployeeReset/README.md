@@ -86,7 +86,7 @@ Edit `<Schedule I>\UserData\MelonPreferences.cfg` after first launch
 | Key | Default | Effect |
 | --- | ------- | ------ |
 | `EmployeeReset.Hotkey` | `F8` | Key to smart-reset every chemist on the current property |
-| `EmployeeReset.HookEMployeeAutoReset` | `true` | Also run SmartReset as a Harmony postfix after `eMployeeMod.ResetEmployeeCore` (no-op if eMployee absent) |
+| `EmployeeReset.HookEMployeeAutoReset` | `false` | (Iteration 14: hard-disabled, this pref is ignored.) Previously: also run SmartReset as a Harmony postfix after `eMployeeMod.ResetEmployeeCore`. Disabled because vanilla's `StopCook` and `Deactivate` internally null `MixingStation.NPCUserObject`, so auto-running SmartReset on every save load was corrupting station state |
 | `EmployeeReset.VerboseLog` | `true` | Log every reset step and ingredient-gate block. Turn off for production |
 
 ## Build from source
@@ -174,14 +174,33 @@ For each chemist (other roles are skipped on F8), in order:
 6. `NavMeshAgent.ResetPath()`.
 7. `NPCBehaviour.SortBehaviourStack()`.
 
-## Technical: eMployee postfix
+## Technical: eMployee postfix (DISABLED in iteration 14)
 
-When eMployee fires its AUTO-RESET via `eMployeeMod.ResetEmployeeCore`,
-our SmartReset runs immediately after as a Harmony postfix
-(chemist-only). This means eMployee's existing watchdog gains the
-comprehensive cleanup without us forking eMployee's source.
+The mod previously installed a Harmony postfix on
+`eMployeeMod.ResetEmployeeCore` so that whenever eMployee fired its
+AUTO-RESET, our SmartReset ran immediately after.
 
-The hook silently no-ops if eMployee is not loaded.
+This is **disabled** as of iteration 14 because Cpp2IL's recovered IL
+revealed:
+
+- `StartMixingStationBehaviour.StopCook` has `[Calls(... MixingStation,
+  SetNPCUser ...)]` -- vanilla's StopCook internally nulls the station's
+  `NPCUserObject`.
+- `StartMixingStationBehaviour.Deactivate` has `[Calls(... StopCook ...)]`
+  AND `[Calls(... MixingStation, SetNPCUser ...)]` -- Deactivate calls
+  StopCook AND directly nulls the station's NPCUserObject.
+- Our SmartReset called both StopCook and Deactivate. Auto-running
+  SmartReset on every save load (which is what the postfix did) was
+  nulling the bench's NPCUserObject every time, breaking vanilla's
+  subsequent move-output task assignment.
+
+The postfix call site (`TryHookEMployee()` in `OnInitializeMelon`) is
+commented out. F8 still works as an explicit user-driven recovery
+hotkey -- but only when the user explicitly invokes it, not on every
+save load.
+
+A future iteration may re-enable an opt-in postfix once SmartReset
+is rewritten to avoid the StopCook/Deactivate side effects.
 
 ## Status
 

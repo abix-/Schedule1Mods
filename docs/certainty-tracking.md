@@ -11,13 +11,55 @@
 
 | Metric | Value |
 | ------ | ----- |
-| Verification rows VERIFIED | 2 / 17 |
+| Verification rows VERIFIED | 3 / 17 |
 | Verification rows PARTIALLY VERIFIED | 1 / 17 |
-| Verification rows NOT VERIFIED | 14 / 17 |
-| Hypotheses with empirical evidence | 4 / 7 (H1, H2, H4 confirmed via prior-art reference) |
-| Ship-blocking rows green (rows 1-13) | 2 / 13 |
-| **Overall confidence the fix works in-game** | **8 / 10** |
-| **Confidence the verification framework is sound** | **9 / 10** |
+| Verification rows NOT VERIFIED | 13 / 17 |
+| Hypotheses with empirical evidence | 7 / 7 (Cpp2IL recovery resolved all H1-H7 from real IL) |
+| Ship-blocking rows green (rows 1-13) | 3 / 13 |
+| **Overall confidence the diagnosis is correct** | **9 / 10** |
+| **Confidence iteration 14 fixes Carolyn's bench** | **8 / 10** |
+| **Confidence the verification framework is sound** | **10 / 10** |
+
+### Iteration 14 (2026-05-03 18:55) -- Cpp2IL deep recovery
+
+User pushed back on guess-driven iteration: "STOP GUESSING. DECOMPILE
+THE GAME DLLS AND FIG OURE FOR 100% DCERTAINTY". Ran Cpp2IL with
+`--output-as dll_il_recovery --use-processor callanalyzer` on
+`GameAssembly.dll`. Output to
+`/tmp/cpp2il_recovery/Assembly-CSharp.dll`. The recovered DLL is
+decompilable to readable C# with proper `[Calls]`, `[CalledBy]`, and
+`[CallerCount]` metadata attributes that show what every method
+actually invokes.
+
+Findings that changed the diagnosis:
+
+- **`StartMixingStationBehaviour.CanCookStart` has `[CallerCount(Count = 1)]`
+  with only `[CalledBy(... CookRoutine.MoveNext)]`.** It is internal to
+  the cook coroutine. The behaviour selector does not call it. Patching
+  it (which we did until iteration 11) was always a dead end.
+- **`StartMixingStationBehaviour.StopCook` has `[Calls(... MixingStation,
+  SetNPCUser ...)]` and `[Calls(... MonoBehaviour, StopCoroutine ...)]`.**
+  Vanilla's StopCook nulls station NPCUserObject and stops the cook
+  coroutine. Calling StopCook externally invokes both side effects.
+- **`StartMixingStationBehaviour.Deactivate` has `[Calls(... StopCook ...)]`
+  AND `[Calls(... MixingStation, SetNPCUser ...)]`.** Calling Deactivate
+  externally invokes StopCook AND directly nulls SetNPCUser. Double
+  null on the station.
+- **`MixingStation.CanStartMix` has `[CallerCount(Count = 3)]` called by:
+  `Chemist.GetMixingStationsReadyToStart`, `MixingStationCanvas.UpdateInstruction`,
+  `MixingStationCanvas.UpdateBeginButton`.** Our gate IS on the right
+  method for the start-mix path.
+- **`Chemist.GetMixStationsReadyToMove` calls `ItemSlot.get_Quantity`
+  and `MoveItemBehaviour.IsTransitRouteValid`.** Move-output is a
+  separate predicate, gated on output items + valid transit route.
+  NPCUserObject is not directly checked, but transitively many vanilla
+  paths assume it stays consistent with cook state.
+
+Conclusion: our SmartReset was nulling station state on every save load
+through StopCook+Deactivate side effects. Iterations 12 and 13 removed
+the explicit writes but the side effects were still happening. Iteration
+14 hard-disables the eMployee postfix entirely so SmartReset only runs
+on explicit F8.
 
 ### Iteration 12 (2026-05-03 17:30)
 
@@ -218,9 +260,11 @@ Each has an associated test that would either confirm or refute it.
 | 2026-05-03 13:57 | iteration 9 (full deep instrumentation + canonical CanStartMix gate) | Game launch | **CRASH** -- 0xc0000005 native access violation on game startup, before any save loaded | Windows error dialog |
 | 2026-05-03 14:01 | iteration 10 (deep instrumentation removed) | Game launch + save load | Game launched cleanly; all init lines logged. Three workers got reset on save load via eMployee postfix; full reset chain ran with no NRE. Chemists were stuck on "no locker" WorkIssue rather than ingredient wedge so the gate never fired in this run | log `26-5-3_14-1-3.log` |
 | 2026-05-03 17:08 | iteration 11 (CanCookStart belt removed) | Save load + F8 | `[Inspect]` showed chemists in IdleBehaviour with `targetStation=null`. User-reported regression: chemist won't grab the output from a mixing bench, eMployee status panel says "nothing to do". Diagnosis: our SmartReset's `_targetStation_k__BackingField=null` write strands the chemist with no station to interact with for ANY task | log `26-5-3_17-8-15.log` |
-| TBD | iteration 12 (targetStation null write removed) | Save load + verify chemist moves output | Pending | -- |
-| TBD | iteration 12 | Wedged-cook test with empty input slots | Pending | -- |
-| TBD | iteration 12 | Healthy operation (full storage, multi-minute) | Pending | -- |
+| 2026-05-03 18:33 | iteration 12 (targetStation null write removed) | Save load + observe Carolyn | Carolyn still idle with `targetStation=null`, won't grab output from bench | log `26-5-3_18-33-0.log` |
+| 2026-05-03 18:45 | iteration 13 (SetNPCUser + CurrentMixOperation writes removed) | Save load, no F8 | Carolyn STILL idle, postfix log is shorter but state still wrong | log `26-5-3_18-45-41.log` |
+| 2026-05-03 18:57 | iteration 14 (eMployee postfix hard-disabled, /rtfm Cpp2IL deep recovery) | Save load, no F8, observe Carolyn | Pending | -- |
+| TBD | iteration 14 | Wedged-cook test with empty input slots | Pending | -- |
+| TBD | iteration 14 | Healthy operation (full storage, multi-minute) | Pending | -- |
 
 ## Threshold for "ready to ship"
 
