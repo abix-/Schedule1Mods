@@ -47,6 +47,10 @@
       <HintPath>$(Il2CppDir)\Assembly-CSharp.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="Il2CppScheduleOne.Core">
+      <HintPath>$(Il2CppDir)\Il2CppScheduleOne.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Il2Cppmscorlib">
       <HintPath>$(Il2CppDir)\Il2Cppmscorlib.dll</HintPath>
       <Private>false</Private>

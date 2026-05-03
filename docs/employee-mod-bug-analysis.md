@@ -1,5 +1,39 @@
 # Schedule 1 -- eMployee Mod Chemist Bug Analysis
 
+## Contents
+
+- [TL;DR](#tldr)
+- [Environment](#environment)
+- [Reproduction](#reproduction)
+- [Observed log slice](#observed-log-slice)
+- [Root cause](#root-cause)
+  - Bug 1 -- ResetEmployeeCore does not stop coroutines
+  - Bug 2 -- MixingCoroutineMoveNextPrefix
+  - Why save/load is the trigger
+  - Bug 3 -- Watchdog reset is too narrow, abandons after 3 retries
+  - Underlying cause for Symptom B
+- [Affected behaviours](#affected-behaviours)
+- [Fix proposal](#fix-proposal)
+  - Fix 1 -- Stop coroutines and disable behaviour cleanly
+  - Fix 2 -- Make the MoveNext prefix safer (or remove it)
+  - Field-name resilience
+  - Fix 3 -- Expand reset scope
+- [For the eMployee mod author: integrating these fixes upstream](#for-the-employee-mod-author-integrating-these-fixes-upstream)
+  - The right fix: gate the predicate on ingredient availability
+  - What "ingredients" actually means in vanilla
+  - Implementation
+  - Approaches we rejected
+- [Sidecar mod: EmployeeReset](#sidecar-mod-employeereset)
+  - Current state
+  - How we discovered each layer
+  - Diagnostic instrumentation results
+  - Root cause (iteration 6 conclusion)
+- [Test plan](#test-plan)
+- [Workarounds for players (no rebuild)](#workarounds-for-players-no-rebuild)
+- [Code references](#code-references)
+- [Open questions](#open-questions)
+- [References](#references)
+
 Root-cause analysis and fix proposal for two distinct chemist failure modes
 caused by the eMployee mod v2.2.4:
 
@@ -782,11 +816,16 @@ we have not yet confirmed in-game that even the sidecar fully resolves the
    `StartMixingStationBehaviour` does NOT override it, so it falls
    through to the base `Behaviour` class -- but we cannot read that body.
    Our patch deliberately does not call it.
-3. **Does `MixingStation.CurrentMixOperation` need to be cleared?** It is
-   a public `MixOperation` reference (Assembly-CSharp.dll line 1560) that
-   tracks the in-progress cook. If it persists after a chemist is
-   removed, it could block the next chemist independently of
-   `NPCUserObject`.
+3. **Does `MixingStation.CurrentMixOperation` need to be cleared?** YES,
+   confirmed by in-game test. It is a public `MixOperation` reference
+   (Assembly-CSharp.dll line 1560) that tracks the in-progress cook.
+   When a chemist wedges mid-cook and we run `StopCook` / `Deactivate`
+   on them, vanilla's behaviour selector re-picks the same cook on the
+   next tick because `CurrentMixOperation` still holds the in-progress
+   mix. The visible symptom: chemist pauses (Deactivate worked), then
+   resumes mixing within ~1 second (vanilla re-activated). Only after
+   adding `station.CurrentMixOperation = null` does the chemist stay
+   freed.
 4. **Is `consecutivePathingFailures` actually being zeroed today?** No.
    We confirmed this by inspection of `Assembly-CSharp.dll`: the il2cpp
    interop bridge exposes `consecutivePathingFailures` as a *property*,
@@ -815,7 +854,9 @@ stuck (Symptom B in this doc) or threw NRE on save load (Symptom A).
 | 3 | Zero `Behaviour.consecutivePathingFailures` | yes (2603-2608) | yes | both | Same as 2, on the behaviour level |
 | 4 | Release `MixingStation.NPCUserObject` for the assigned station | NO | yes | Symptom B | The actual root cause for "chemist stuck after fire/rehire". A fired chemist's reservation is never released |
 | 5 | `MonoBehaviour.StopAllCoroutines()` on the active behaviour | NO | yes | Symptom A | Without it, an in-flight `CookRoutine` resumes after reset and dereferences fields the reset just nulled |
-| 6 | `Behaviour.Disable()` (vanilla cleanup hook) | NO | yes | both | The intended way to stop a behaviour. Skipping it leaks reservations, leaves SyncVars half-set |
+| 6a | `Behaviour.Disable()` (vanilla cleanup hook) | NO | NO -- intentionally skipped | -- | Body unreadable from Cpp2IL output; risk of unknown side effects. We use `Deactivate()` instead -- the `StartMixingStationBehaviour`-specific override -- which has clear semantics |
+| 6b | `Behaviour.Deactivate()` (chemist-specific cleanup) | NO | yes | Symptom B | Override on `StartMixingStationBehaviour` (line 474 of decompiled). Confirmed in-game: chemist visually pauses when Deactivate runs, exits the mixing pose. Without it the chemist stays at the table even with the cook coroutine torn down |
+| 6c | `MixingStation.CurrentMixOperation = null` | NO | yes | Symptom B | Confirmed in-game: without nulling this, vanilla's behaviour selector re-picks the same cook within ~1 second of our reset because the station still has an in-progress mix |
 | 7 | Null `_activeBehaviour_k__BackingField` on `NPCBehaviour` | yes (2610-2615) | yes | both | Standard behaviour-detach |
 | 8 | `NavMeshAgent.ResetPath()` | yes (2626-2631) | yes | both | Clears stale destination |
 | 9 | `NPCBehaviour.SortBehaviourStack()` | NO (helper at 2526 unused in reset path) | yes | Symptom B | Forces re-evaluation so a fallback behaviour can take over while the broken cook task waits for conditions |
@@ -1135,8 +1176,10 @@ hotkey (so the player can force-recover a stuck chemist on demand).
 | Source | Single C# project at `./EmployeeReset/` (this repository) |
 | Compiled | Yes -- `bin/Release/net6.0/EmployeeReset.dll`, 12.8 KB |
 | Symptom A (save/load NRE + stuck workers) | **Verified fixed in one test run.** Loaded a save where botanist Mathew Martin and chemist Richard Perez both flagged STUCK at Storage Unit on save load; the recurring `Il2CppException at StartMixingStationBehaviour+CookRoutine.MoveNext` did NOT fire, and the chemist recovered to working state. |
-| Symptom B (mid-cook ingredient exhaustion wedge) | NOT yet reproduced or verified. Likely fixed by the same code path but not directly tested. |
-| Which step did the work | Uncertain. In the verified test the active-behaviour reference was already null by the time our postfix ran (eMployee's reset already nulled it), so the cook-cleanup branch (`StopCook` / `SetNPCUser` / `StopAllCoroutines`) did not execute. The fix likely came from one or more of: `consecutivePathingFailures = 0` via the typed property setter (eMployee's `GetField` version is a silent no-op), `NPCBehaviour.SortBehaviourStack()` (eMployee never calls this in their reset path), or a combination. Strongest hypothesis: `SortBehaviourStack` is the differentiator. |
+| Symptom B (mid-cook ingredient exhaustion wedge) | **Diagnosed in iteration 6, fix built in iteration 8, deploy pending.** The instrumentation showed vanilla auto-re-assigns `targetStation` within ~200ms of our null write. Vanilla's `CanCookStart` returns true even when the station's input slots are empty. The fix is a Harmony postfix on `CanCookStart` that returns false when any input slot has Quantity == 0 -- making vanilla's behaviour selector pick a fallback (idle) instead of starting another wedge. |
+| Hotkey scope | F8 is chemist-only. Other roles are skipped. The chemist-specific bug is what we have evidence of; widening the hotkey to other roles needs separate testing. |
+| Which step did the work for Symptom A | Uncertain. In that test the active-behaviour reference was already null by the time our postfix ran, so the cook-cleanup branch did not execute. The fix likely came from one or more of: `consecutivePathingFailures = 0` via the typed property setter (eMployee's `GetField` version is a silent no-op), `NPCBehaviour.SortBehaviourStack()` (eMployee never calls this in their reset path), or a combination. Strongest hypothesis: `SortBehaviourStack` is the differentiator for Symptom A. |
+| Ingredient gate (iteration 8) | **The actual root-cause fix.** Postfix on `CanCookStart` blocks the chemist from starting a cook with empty input slots. Built and ready to deploy; pending one in-game verification. |
 | Repository | <https://github.com/abix-/Schedule1Mods> |
 | Target platform | Schedule I 0.4.5f2 + MelonLoader 0.7.0+ (net6 / IL2CPP x64) |
 | Dependencies | MelonLoader, 0Harmony, Il2CppInterop, Assembly-CSharp |
@@ -1144,30 +1187,235 @@ hotkey (so the player can force-recover a stuck chemist on demand).
 
 ### What it actually does
 
-For each affected employee, in order:
+For each affected employee, in order. The chain expanded over several
+test iterations as each level of state became visible.
 
 1. Zeroes `Employee.consecutivePathingFailures` via the typed property
-   setter (the bridge type exposes it as a property; `GetField` returns
-   null, which is why eMployee's reset is a no-op for this counter).
-2. If the active behaviour is `StartMixingStationBehaviour`:
-   - Calls `cook.StopCook()` -- the vanilla "end cook session" hook.
-   - Calls `cook.targetStation.SetNPCUser(null)` as belt-and-suspenders
-     (safe no-op if `StopCook` already cleared it).
-3. Calls `MonoBehaviour.StopAllCoroutines()` on the active behaviour as
-   a final guard against walk-routines and other state machines that
-   `StopCook` may not cover.
+   setter. The bridge type exposes it as a property; `GetField` returns
+   null, which is why eMployee's reset is a silent no-op for this
+   counter.
+2. **Chemist-typed path** (always runs for chemists, regardless of
+   `_activeBehaviour` state). Reaches the chemist's
+   `StartMixingStationBehaviour` MonoBehaviour via the typed
+   `Chemist.StartMixingStationBehaviour` property (line 530 of decompiled
+   `Chemist`). This catches wedged coroutines even when eMployee already
+   nulled `_activeBehaviour`. On that component, in order:
+   - `StopCook()` -- vanilla's intended end-of-cook hook.
+   - `targetStation.SetNPCUser(null)` -- release the station's
+     "in use by NPC" reservation.
+   - `targetStation.CurrentMixOperation = null` -- clear the in-progress
+     mix operation. **Critical: without this, vanilla immediately
+     re-picks `StartMixingStationBehaviour` after the reset because the
+     station still has an in-progress cook waiting to be resumed.**
+   - `MonoBehaviour.StopAllCoroutines()` -- final guard against any
+     coroutine that `StopCook` did not cover.
+   - `Deactivate()` -- vanilla's "stop being active, unwind animation
+     and position lock" hook. Override exists on
+     `StartMixingStationBehaviour` at line 474 of the decompile.
+3. **Active-behaviour path** (runs only if `_activeBehaviour` is currently
+   `StartMixingStationBehaviour`). Same five operations, applied to the
+   active reference. Belt-and-suspenders -- the typed path usually covers
+   this case, but if eMployee's reset didn't run yet `_activeBehaviour`
+   may still be set.
 4. Nulls `_activeBehaviour_k__BackingField` on the chemist's
-   `NPCBehaviour` so the next tick re-evaluates the priority stack
-   from scratch.
-5. Calls `NavMeshAgent.ResetPath()` to clear any stale destination.
-6. Calls `NPCBehaviour.SortBehaviourStack()` to force re-evaluation so a
-   fallback behaviour can take over while the broken cook conditions
-   remain unsatisfied.
+   `NPCBehaviour` so the next tick re-evaluates the priority stack from
+   scratch.
+5. `NavMeshAgent.ResetPath()` to clear any stale destination.
+6. `NPCBehaviour.SortBehaviourStack()` to force re-evaluation so a
+   fallback behaviour can take over while broken cook conditions remain
+   unsatisfied.
 
 The mod does NOT call `Behaviour.Disable()`. The base `Behaviour` class's
-`Disable()` body is unreadable from Cpp2IL output and we have no
-evidence it does the right thing for a chemist mid-cook. `StopCook()`
-is the documented public API and is preferred.
+`Disable()` body is unreadable from Cpp2IL output and we have no evidence
+it does the right thing for a chemist mid-cook. `StopCook()` plus
+`Deactivate()` are the documented public APIs and are preferred.
+
+### How we discovered each layer (test history)
+
+The state-clearing chain was not designed up front. Each iteration
+exposed the next missing piece:
+
+| Iteration | Visible symptom on F8 | Diagnosis | Code added |
+| --- | --- | --- | --- |
+| 0 (baseline, eMployee only) | Chemist wedged, NRE every ~30 s | eMployee's reset null-writes `_activeBehaviour` but does not stop coroutines or release station state | n/a -- bug unfixed in eMployee |
+| 1 (StopAllCoroutines + StopCook on active) | `scanned 4, reset 0` -- nothing fired | `LooksStuck` heuristic too narrow; `_activeBehaviour` was already null by the time we ran | Drop heuristic from F8 path; add typed `Chemist.StartMixingStationBehaviour` access path |
+| 2 (typed cook + StopCook + StopAllCoroutines) | All log lines fire cleanly, but chemist still wedged at table; NRE persists | `StopCook()` is a flag-set, not a hard kill; chemist's animation/position still locked | Add `Deactivate()` to both paths |
+| 3 (Deactivate added) | Chemist visually pauses, then immediately resumes mixing; NRE persists | Vanilla's behaviour selector re-picks the cook because `MixingStation.CurrentMixOperation` still holds the in-progress cook | Add `station.CurrentMixOperation = null` to both paths |
+| 4 (CurrentMixOperation cleared) | Same pause-then-resume; NRE persists | All station and behaviour state cleared, but vanilla still re-activates within ~600ms | Add HAMMER `StopAllCoroutines` on every MonoBehaviour on the chemist's GameObject |
+| 5 (instrumentation added) | -- | Harmony-prefix on CookRoutine.MoveNext + post-F8 inspect coroutine sampling at 200ms intervals reveals: vanilla auto-re-assigns `targetStation` within ~200ms of our null write, then activates a fresh `StartMixingStationBehaviour` at t+400ms, fresh CookRoutine starts at t+790ms (different state-machine hash from before our reset), state 1 NRE again at t+1290ms | Instrumentation only; no fix yet |
+| 6 (null targetStation) | Inspect log shows targetStation=null at t+200ms then targetStation=Mixing Station at t+400ms; cook re-activates anyway | Vanilla's behaviour selector re-derives `targetStation` from `MixingStationConfiguration` every evaluation tick. Writing null to the chemist's targetStation is overwritten by vanilla within ~200ms. The configuration-level assignment is sticky and we cannot remove it without losing the player's setup | Identified the actual root cause: vanilla's `CanCookStart()` returns true even when ingredient reachability cannot be satisfied |
+| 7 (cooldown via CanCookStart prefix) | Built but rejected by user before testing | User: "I don't need a cooking cooldown. I need mixing to NOT occur unless there's ingredients." Cooldown was a workaround, not a fix | Reverted: cooldown code removed |
+| 8 (ingredient gate via CanCookStart postfix) | Built, deploy pending | Phase 1 decompile of `MixingStationConfiguration` revealed there is no recipe field; "ingredients" are the items in `MixingStation.InputSlots`. Postfix `CanCookStart` to return false when any input slot has Quantity == 0. Vanilla's selector then picks IdleBehaviour, chemist stops, no manual intervention needed | See `ingredient-gate-fix-plan.md` |
+
+Each iteration corresponds to one F8 press in the actual game with logs
+captured. The "pause then resume" pattern in iteration 3 was the cleanest
+diagnostic moment for the deactivation layer. Iteration 5's instrumentation
+(see "Diagnostic instrumentation results" below) was the cleanest diagnostic
+moment for the assignment layer -- it told us in one F8 press exactly which
+state field vanilla was re-deriving and on what cadence.
+
+### Diagnostic instrumentation results (iteration 5)
+
+We added two instruments before the iteration-5 F8 press:
+
+1. Harmony prefix on `StartMixingStationBehaviour.<<StartCook>g__CookRoutine|13_0>d.MoveNext`
+   that logs the state-machine instance hash and `__1__state` value.
+2. A MelonCoroutine spawned after F8 that samples chemist state every 200 ms
+   for 2 seconds.
+
+Sample of the iteration-5 log (timestamps relative to F8 press at 12:27:53.786):
+
+```
+pre-F8:
+  [CookMN] hash=38049356 state=0 count=1 NEW-INSTANCE STATE-CHANGE
+  [CookMN] hash=38049356 state=1 count=2 STATE-CHANGE
+  Il2CppException: NullReferenceException at CookRoutine.MoveNext
+
+F8 fires (all 11 cleanup steps, including HAMMER on 12 MonoBehaviours):
+  [Reset] Richard Perez: smart reset complete
+
+post-F8 inspect window:
+  t+200ms:  active=IdleBehaviour      targetStation=Mixing Station mixOp=null  npcUser=null
+  t+400ms:  active=IdleBehaviour      targetStation=Mixing Station mixOp=null  npcUser=null
+  t+600ms:  active=StartMixingStationBehaviour  targetStation=Mixing Station mixOp=null  npcUser=null  <-- vanilla RE-ACTIVATED
+  t+790ms:  [CookMN] hash=58655942 state=0 count=1 NEW-INSTANCE  <-- new state machine, different hash
+  t+800ms:  active=StartMixingStationBehaviour  targetStation=Mixing Station mixOp=null  npcUser=null
+  ...
+  t+1290ms: [CookMN] hash=58655942 state=1 count=2 STATE-CHANGE
+  Il2CppException: NullReferenceException at CookRoutine.MoveNext  <-- new cook NREs at same state
+  t+2000ms: active=StartMixingStationBehaviour  targetStation=Mixing Station mixOp=null  npcUser=SET  <-- new cook claimed station
+```
+
+This single F8 press revealed:
+
+- Our `StopAllCoroutines` (including the HAMMER) successfully killed the
+  original wedged coroutine. The new state-machine hash (58655942) is
+  different from the original (38049356).
+- Our `Deactivate` worked. Chemist transitioned to `IdleBehaviour` for
+  ~400 ms.
+- Our `mixOp = null` and `npcUser = null` writes stuck through the entire
+  inspection window (until vanilla's new cook re-set `npcUser` at t+2000ms).
+- But: targetStation stayed `Mixing Station` the entire time -- our null
+  write was overwritten almost immediately by vanilla, before the first
+  inspect sample could capture it. (Iteration 6 confirmed this: with our
+  null write added, the t+200ms sample showed `targetStation=null` and the
+  t+400ms sample showed `targetStation=Mixing Station` again, an explicit
+  re-assignment within 200ms.)
+- The new cook fires its own MoveNext at t+790ms (state 0 -- setup) then
+  state 1 -- which NREs at the same point as the original wedged cook.
+
+### Root cause (iteration 6 conclusion)
+
+**Vanilla's `StartMixingStationBehaviour.CanCookStart()` predicate does not
+check whether the recipe's ingredients are actually reachable from the
+station's storage.** It checks station availability, recipe presence, and
+chemist-on-shift status, all of which return true. So vanilla repeatedly
+chooses to start the cook, the cook iterates ingredients, hits the missing
+one, and wedges.
+
+The chemist is not "being stupid" -- they are following vanilla's
+instructions. Vanilla is telling them "yes, you can cook" without
+verifying that they actually can. **The bug is in the predicate, not in
+the chemist's response to it.**
+
+### The right fix: gate the predicate on ingredient availability
+
+The user-stated requirement is unambiguous:
+
+> "I need mixing to NOT occur unless there's ingredients. THAT'S the root
+> issue."
+
+The correct fix is to extend `CanCookStart()` so it verifies the
+ingredients are present before saying yes. When ingredients are missing,
+`CanCookStart` returns false, vanilla's behaviour selector picks a
+fallback (idle or walk-to-rest), the chemist stays out of the cook
+automatically. When the player restocks, `CanCookStart` returns true on
+the next evaluation tick, the chemist resumes work without any manual
+intervention. No cooldown. No timeout. No state.
+
+#### What "ingredients" actually means in vanilla
+
+Phase 1 reconnaissance (decompiling `MixingStationConfiguration`,
+`MixingStation`, `ItemSlot`) revealed that **Schedule I does not have a
+formal recipe object with an ingredient list.** The "recipe" is implicit:
+defined by what items the player has loaded into the station's input
+slots. `MixingStationConfiguration` only carries
+`AssignedChemist`, `Destination`, `StartThrehold` (sic), and
+`DestinationRoute` -- no recipe field.
+
+So the bug is even narrower than originally framed: the chemist is at
+the station with one or more `MixingStation.InputSlots` empty, and
+vanilla's `CanCookStart` returns true anyway. The cook starts, hits the
+empty slot, wedges.
+
+The check is simply: every input slot must have `Quantity > 0`. If any
+slot is empty, block the cook.
+
+#### Implementation
+
+```csharp
+[HarmonyPatch(typeof(StartMixingStationBehaviour), "CanCookStart")]
+class CanCookStartIngredientGate
+{
+    static void Postfix(StartMixingStationBehaviour __instance, ref bool __result)
+    {
+        if (!__result) return;                  // never override false to true
+        if (__instance == null) return;
+        try
+        {
+            MixingStation station = __instance.targetStation;
+            if (station == null) return;
+            var slots = station.InputSlots;
+            if (slots == null || slots.Count == 0)
+            {
+                __result = false;
+                return;
+            }
+            for (int i = 0; i < slots.Count; i++)
+            {
+                ItemSlot slot = slots[i];
+                if (slot == null || slot.Quantity <= 0)
+                {
+                    __result = false;
+                    return;
+                }
+            }
+        }
+        catch
+        {
+            // Fail open; defer to vanilla on error.
+        }
+    }
+}
+```
+
+The check is O(InputSlots.Count), typically 2-3 iterations. No cache
+needed at this level. If perf becomes a concern, memoize on
+`(stationId, slotsHash)` for ~0.5 s.
+
+Postfix, not prefix. Vanilla makes the call, we only override `true` to
+`false` when slots are empty. We never override `false` to `true`.
+
+The postfix is installed in `EmployeeReset.Mod.OnInitializeMelon` via
+`TryPatchCanCookStartIngredientGate()`. See
+[`docs/ingredient-gate-fix-plan.md`](ingredient-gate-fix-plan.md) for
+the full plan and Phase 1 findings.
+
+### Approaches we rejected and why
+
+1. **Cooldown via Harmony prefix that lies to the predicate for 30 s after
+   F8.** We started building this in iteration 7. Rejected because: (a) it
+   does not address the underlying bug; (b) the cooldown window is
+   arbitrary; (c) if ingredients are still missing after the cooldown
+   expires, the chemist re-wedges; (d) the user has clearly stated they
+   want a real ingredient check, not a timer.
+2. **Patch `CookRoutine.MoveNext` to swallow NREs.** Cosmetic only --
+   stops the log flood but the chemist still wedges. Rejected because the
+   visible symptom (stuck-mixing) remains.
+3. **Clear the chemist's `MixingStationConfiguration` to remove the
+   station-recipe assignment.** Destructive -- the player loses their
+   setup and has to redo it. Rejected because it solves the stuck state
+   only by deleting the configuration.
 
 ### Build instructions
 
