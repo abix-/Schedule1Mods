@@ -72,7 +72,7 @@ public class Mod : MelonMod
         // if (_hookEMployeePref.Value)
         //     TryHookEMployee();
 
-        // Deep instrumentation removed in iteration 10 -- caused 0xc0000005
+        // Deep instrumentation removed in iteration 10. Caused 0xc0000005
         // crash on game launch. CanCookStart postfix removed in iteration 11
         // because it was over-blocking the chemist's "move output to
         // destination" behaviour: when inputs were empty but output had
@@ -233,13 +233,13 @@ public class Mod : MelonMod
     }
 
     // -------------------------------------------------------------------------
-    //  Ingredient gate -- the actual root-cause fix
+    //  Ingredient gate. The actual root-cause fix
     // -------------------------------------------------------------------------
 
     /// <summary>
     /// Harmony-postfix CanCookStart so the predicate also requires every
     /// MixingStation input slot to have Quantity > 0. Vanilla's predicate
-    /// is incomplete -- it returns true when it should not, leading to
+    /// is incomplete. It returns true when it should not, leading to
     /// the chemist starting a cook that wedges mid-loop on an empty slot.
     /// Our postfix only ever flips true -> false; it never overrides a
     /// vanilla "no" to "yes".
@@ -606,7 +606,7 @@ public class Mod : MelonMod
             // 0. Zero pathing-failure counters via the typed property setter.
             //    NB: on the il2cpp bridge type these are PROPERTIES, not
             //    fields; using GetField would silently return null. eMployee's
-            //    reset has this exact bug (their line 2585-2608) -- their
+            //    reset has this exact bug (their line 2585-2608). Their
             //    counter-zero is a no-op. We use the typed property here.
             try { emp.consecutivePathingFailures = 0; }
             catch (Exception ex) { Log(true, $"[Reset] {who}: clear NPC pathFails threw {ex.Message}"); }
@@ -698,7 +698,7 @@ public class Mod : MelonMod
 
             // 1. If active is a chemist work behaviour, call its dedicated
             //    Stop method. StopCook() is the vanilla public API for ending
-            //    a cook session cleanly -- presumed (but not verified) to
+            //    a cook session cleanly. Presumed (but not verified) to
             //    release MixingStation.NPCUserObject and clear MixOperation.
             //    We do not call Behaviour.Disable() because its body is
             //    unreadable from the il2cpp decompile and we have no evidence
@@ -783,7 +783,7 @@ public class Mod : MelonMod
             // 4a. HAMMER: stop coroutines on EVERY MonoBehaviour attached to
             //     the chemist's GameObject. Iterations 2-4 showed that
             //     StopAllCoroutines on StartMixingStationBehaviour does not
-            //     reach the wedged CookRoutine -- the routine is hosted on
+            //     reach the wedged CookRoutine. The routine is hosted on
             //     a different component (Chemist, Employee, or NPC base).
             //     Since we cannot tell from the il2cpp decompile which
             //     MonoBehaviour holds the coroutine, hit them all.
