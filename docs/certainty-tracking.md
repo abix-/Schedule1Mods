@@ -1,4 +1,4 @@
-# Certainty tracking -- EmployeeReset ingredient gate
+# Certainty tracking. EmployeeReset ingredient gate
 
 > The goal: know with 1000% empirical certainty that the ingredient gate
 > fix actually solves the user's bug without regressing other behaviour.
@@ -20,7 +20,7 @@
 | **Confidence iteration 14 fixes Carolyn's bench** | **8 / 10** |
 | **Confidence the verification framework is sound** | **10 / 10** |
 
-### Iteration 14 (2026-05-03 18:55) -- Cpp2IL deep recovery
+### Iteration 14 (2026-05-03 18:55). Cpp2IL deep recovery
 
 User pushed back on guess-driven iteration: "STOP GUESSING. DECOMPILE
 THE GAME DLLS AND FIG OURE FOR 100% DCERTAINTY". Ran Cpp2IL with
@@ -76,7 +76,7 @@ chemist with no station to interact with for ANY task.
 
 Iteration 12 removes the `_targetStation_k__BackingField` null write
 from the typed-cook cleanup path. The canonical `CanStartMix` gate
-(iteration 9) now prevents new wedges from starting -- we no longer
+(iteration 9) now prevents new wedges from starting. We no longer
 need to forcibly disconnect the chemist from their station.
 
 This means the existing save should now work without restart. Vanilla
@@ -91,22 +91,22 @@ A search for prior art turned up the **ProduceMore** mod by lasersquid
 Its decompiled source is essentially the canonical reference for the
 mixing station API and resolves several of our open hypotheses:
 
-- H1 (CanCookStart is the right method) -- **REFUTED**. ProduceMore
+- H1 (CanCookStart is the right method). **REFUTED**. ProduceMore
   patches `MixingStation.CanStartMix` instead. That is the predicate
   vanilla's behaviour selector uses. Our `CanCookStart` patch may still
   fire, but the canonical gate is on `CanStartMix`.
-- H2 (vanilla returns true with empty slots) -- **CONFIRMED**.
+- H2 (vanilla returns true with empty slots). **CONFIRMED**.
   ProduceMore explicitly overrides `CanStartMix` because vanilla's
   version returns true in cases it should not.
-- H3 (every input slot must be non-empty rule) -- **REFINED**. The real
+- H3 (every input slot must be non-empty rule). **REFINED**. The real
   model is named slots: `ProductSlot`, `MixerSlot`, `OutputSlot`.
   `MixingStation.GetMixQuantity()` returns
   `Mathf.Min(ProductSlot.Quantity, MixerSlot.Quantity, MaxMixQuantity)`.
   Empty product or empty mixer -> mix quantity 0 -> can't start.
-- H4 (InputSlots is the right list) -- **REFUTED**. Use
+- H4 (InputSlots is the right list). **REFUTED**. Use
   `ProductSlot.Quantity > 0 && MixerSlot.Quantity > 0` (or
   `GetMixQuantity() > 0` which is equivalent).
-- H5 (fetch is a separate behaviour) -- **STILL OPEN** but lower-stakes
+- H5 (fetch is a separate behaviour). **STILL OPEN** but lower-stakes
   now: with the canonical gate, the chemist's behaviour selector simply
   won't pick this station for `StartMixingStationBehaviour` until slots
   are loaded. Whatever fetch behaviour exists, it's separate.
@@ -136,8 +136,8 @@ that test:
 - If the gate is not working: we see exactly which assumption was wrong
   in the `[Flow]` trace, and the next iteration is targeted not guessed.
 
-Either outcome moves us decisively forward. The current state -- mod
-built, deploy pending -- is the highest-leverage moment in the project.
+Either outcome moves us decisively forward. The current state. Mod
+built, deploy pending. Is the highest-leverage moment in the project.
 
 ## Contents
 
@@ -240,31 +240,31 @@ Each has an associated test that would either confirm or refute it.
 
 | # | Hypothesis | If false, what changes |
 | - | ---------- | ---------------------- |
-| H1 | `CanCookStart` is the predicate vanilla's behaviour selector uses | If false, our gate is patching the wrong method. We would need to find the actual predicate. Test: watch for `[Flow] CanCookStart enter` lines during normal evaluation -- if they fire whenever the chemist could activate the cook, hypothesis holds |
-| H2 | Vanilla returns true from `CanCookStart` when slots are empty | If false, vanilla itself blocks the cook and our gate is unnecessary -- the bug is elsewhere, perhaps in `CookRoutine` proceeding without verifying slots itself. Test: trace shows enter with empty slots followed by exit result=true |
+| H1 | `CanCookStart` is the predicate vanilla's behaviour selector uses | If false, our gate is patching the wrong method. We would need to find the actual predicate. Test: watch for `[Flow] CanCookStart enter` lines during normal evaluation. If they fire whenever the chemist could activate the cook, hypothesis holds |
+| H2 | Vanilla returns true from `CanCookStart` when slots are empty | If false, vanilla itself blocks the cook and our gate is unnecessary. The bug is elsewhere, perhaps in `CookRoutine` proceeding without verifying slots itself. Test: trace shows enter with empty slots followed by exit result=true |
 | H3 | "Every input slot must be non-empty" is the right rule | If too strict, we block cooks that vanilla could complete successfully. Test: watch for `[IngredientGate] BLOCK` lines during a working session with full storage; if any appear on stations the player expects to work, the rule is wrong |
 | H4 | Vanilla's `MixingStation.InputSlots` is the list `CookRoutine` consumes from | If false (e.g., it consumes from `ItemSlots` superset), our check is on the wrong list. Test: instrument `CookRoutine.MoveNext` to log slot reads (harder; il2cpp body is opaque) |
-| H5 | The chemist's "fetch ingredients" flow is a separate behaviour, not part of `StartMixingStationBehaviour` | If false (fetch is part of StartMixingStation), blocking activation prevents fetching too -- the chemist never loads the slots, even with storage available. Test: watch behaviour transitions during play; if there is a separate fetch behaviour, it will appear as a different `active=` value in `[Inspect]` lines |
+| H5 | The chemist's "fetch ingredients" flow is a separate behaviour, not part of `StartMixingStationBehaviour` | If false (fetch is part of StartMixingStation), blocking activation prevents fetching too. The chemist never loads the slots, even with storage available. Test: watch behaviour transitions during play; if there is a separate fetch behaviour, it will appear as a different `active=` value in `[Inspect]` lines |
 | H6 | `MixingStation.CurrentMixOperation = null` survives across vanilla's behaviour-selector ticks | If false, vanilla auto-recreates the mix operation (we observed this for `targetStation` in iteration 6). The gate would still work because we patch `CanCookStart` regardless of `CurrentMixOperation` state | Verified-ish: in iteration 6 inspect lines, mixOp stayed null through 2-second window |
-| H7 | Our Harmony postfix runs before vanilla's behaviour selector consumes the result | If false, the selector decided based on the un-overridden value before our postfix ran. Postfixes in Harmony run synchronously inside the patched method, before return -- this is structurally guaranteed unless something is very wrong. Confidence: high |
+| H7 | Our Harmony postfix runs before vanilla's behaviour selector consumes the result | If false, the selector decided based on the un-overridden value before our postfix ran. Postfixes in Harmony run synchronously inside the patched method, before return. This is structurally guaranteed unless something is very wrong. Confidence: high |
 
 ## Test runs
 
 | Date / time | Build version | Action | Outcome | Evidence file |
 | ----------- | ------------- | ------ | ------- | ------------- |
-| 2026-05-03 11:53 | iteration 1 (StopAllCoroutines + StopCook on active) | Save load | scanned 4, reset 0 -- nothing fired (filter too narrow) | log slice in chat |
+| 2026-05-03 11:53 | iteration 1 (StopAllCoroutines + StopCook on active) | Save load | scanned 4, reset 0. Nothing fired (filter too narrow) | log slice in chat |
 | 2026-05-03 12:07 | iteration 3 (Deactivate added) | F8 on wedged chemist | All cleanup steps fired; chemist visually paused then resumed mixing; NRE persisted | log slice in chat |
 | 2026-05-03 12:12 | iteration 4 (CurrentMixOperation cleared) | F8 | Same pause-resume; NRE persisted | log slice in chat |
 | 2026-05-03 12:23 | iteration 5 (instrumentation added) | F8 | Diagnostic logs revealed targetStation re-assigned within 200ms of our null write | log slice in chat |
 | 2026-05-03 12:32 | iteration 6 (null targetStation) | F8 | targetStation=null at t+200ms then re-assigned at t+400ms; new CookRoutine fires; NRE persisted | log slice in chat |
-| 2026-05-03 13:57 | iteration 9 (full deep instrumentation + canonical CanStartMix gate) | Game launch | **CRASH** -- 0xc0000005 native access violation on game startup, before any save loaded | Windows error dialog |
+| 2026-05-03 13:57 | iteration 9 (full deep instrumentation + canonical CanStartMix gate) | Game launch | **CRASH**. 0xc0000005 native access violation on game startup, before any save loaded | Windows error dialog |
 | 2026-05-03 14:01 | iteration 10 (deep instrumentation removed) | Game launch + save load | Game launched cleanly; all init lines logged. Three workers got reset on save load via eMployee postfix; full reset chain ran with no NRE. Chemists were stuck on "no locker" WorkIssue rather than ingredient wedge so the gate never fired in this run | log `26-5-3_14-1-3.log` |
 | 2026-05-03 17:08 | iteration 11 (CanCookStart belt removed) | Save load + F8 | `[Inspect]` showed chemists in IdleBehaviour with `targetStation=null`. User-reported regression: chemist won't grab the output from a mixing bench, eMployee status panel says "nothing to do". Diagnosis: our SmartReset's `_targetStation_k__BackingField=null` write strands the chemist with no station to interact with for ANY task | log `26-5-3_17-8-15.log` |
 | 2026-05-03 18:33 | iteration 12 (targetStation null write removed) | Save load + observe Carolyn | Carolyn still idle with `targetStation=null`, won't grab output from bench | log `26-5-3_18-33-0.log` |
 | 2026-05-03 18:45 | iteration 13 (SetNPCUser + CurrentMixOperation writes removed) | Save load, no F8 | Carolyn STILL idle, postfix log is shorter but state still wrong | log `26-5-3_18-45-41.log` |
-| 2026-05-03 18:57 | iteration 14 (eMployee postfix hard-disabled, /rtfm Cpp2IL deep recovery) | Save load, no F8, observe Carolyn | Pending | -- |
-| TBD | iteration 14 | Wedged-cook test with empty input slots | Pending | -- |
-| TBD | iteration 14 | Healthy operation (full storage, multi-minute) | Pending | -- |
+| 2026-05-03 18:57 | iteration 14 (eMployee postfix hard-disabled, /rtfm Cpp2IL deep recovery) | Save load, no F8, observe Carolyn | Pending |. |
+| TBD | iteration 14 | Wedged-cook test with empty input slots | Pending |. |
+| TBD | iteration 14 | Healthy operation (full storage, multi-minute) | Pending |. |
 
 ## Threshold for "ready to ship"
 
@@ -282,7 +282,7 @@ mechanical step, not a verification.
 
 Once rows 1-13 are green, the deep instrumentation (`[Flow]` lines,
 `[Inspect]` coroutine) can come out for v0.2 to reduce log noise. The
-`[IngredientGate] BLOCK` line should stay -- it is useful diagnostics
+`[IngredientGate] BLOCK` line should stay. It is useful diagnostics
 for the player.
 
 Update this document at the end of every test run.
