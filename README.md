@@ -32,11 +32,11 @@ If Schedule I is installed somewhere other than the default
 dotnet build -c Release -p:GameDir="D:\Games\Schedule I"
 ```
 
-The output `*.dll` goes in `bin/Release/net6.0/` -- copy it to your
+The output `*.dll` goes in `bin/Release/net6.0/`. Copy it to your
 Schedule I `Mods/` folder.
 
 ## Status
 
 | Mod | Version | Verified |
 | --- | ------- | -------- |
-| EmployeeReset | 0.1.0 | Symptom A (save/load NRE + stuck workers) verified fixed in one test. Symptom B (mid-cook wedge) -- ingredient-gate fix built; awaiting in-game verification. |
+| EmployeeReset | 0.1.0 | Symptom A (save/load NRE + stuck workers) verified fixed in one test. Symptom B (mid-cook wedge). Ingredient-gate fix built; awaiting in-game verification. |
