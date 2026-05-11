@@ -1,15 +1,15 @@
-# Ingredient gate fix -- implementation plan
+# Ingredient gate fix. Implementation plan
 
 ## Contents
 
 - [Requirements (user-stated)](#requirements-user-stated)
-- [Phase 0 -- cleanup](#phase-0----cleanup)
-- [Phase 1 -- reconnaissance (results)](#phase-1----reconnaissance-results)
-- [Phase 2 -- predicate design](#phase-2----predicate-design-revised-after-phase-1)
-- [Phase 3 -- Harmony wiring](#phase-3----harmony-wiring)
-- [Phase 4 -- caching](#phase-4----caching)
-- [Phase 5 -- validation](#phase-5----validation)
-- [Phase 6 -- known edge cases](#phase-6----known-edge-cases)
+- [Phase 0. Cleanup](#phase-0----cleanup)
+- [Phase 1. Reconnaissance (results)](#phase-1----reconnaissance-results)
+- [Phase 2. Predicate design](#phase-2----predicate-design-revised-after-phase-1)
+- [Phase 3. Harmony wiring](#phase-3----harmony-wiring)
+- [Phase 4. Caching](#phase-4----caching)
+- [Phase 5. Validation](#phase-5----validation)
+- [Phase 6. Known edge cases](#phase-6----known-edge-cases)
 - [Status tracking](#status-tracking)
 
 The chemist wedges at the MixingStation when a recipe ingredient becomes
@@ -40,7 +40,7 @@ This document is the standing plan for implementing that fix.
 - Preserves all player setup (recipe, station assignment, chemist
   configuration).
 
-## Phase 0 -- cleanup
+## Phase 0. Cleanup
 
 Remove the iteration-7 cooldown code from `EmployeeReset/src/Mod.cs`. It
 embodies the rejected approach.
@@ -57,11 +57,11 @@ The diagnostic instrumentation (`TryInstrumentCookRoutine`,
 `CookMoveNextPrefix`, `_diag*` flags, `_cookMoveNextCount`) stays. It is
 useful for verifying the new fix.
 
-## Phase 1 -- reconnaissance (results)
+## Phase 1. Reconnaissance (results)
 
 Outcome: the original plan was over-engineered. Schedule I does not have
 an explicit recipe object with an ingredient list. The "recipe" is
-implicit -- defined by what items the player has loaded into the
+implicit. Defined by what items the player has loaded into the
 station's input slots.
 
 ### Findings
@@ -107,10 +107,10 @@ against the station's own input slots, not against property storage.
 
 ### Decompiles produced
 
-- `/tmp/mixconfig.cs` -- 348 lines (MixingStationConfiguration)
-- `/tmp/mixingstation.cs` -- 3767 lines (MixingStation, has InputSlots)
-- `/tmp/itemslot.cs` -- 1007 lines (ItemSlot)
-- `/tmp/startmix.cs` -- 679 lines (StartMixingStationBehaviour)
+- `/tmp/mixconfig.cs`. 348 lines (MixingStationConfiguration)
+- `/tmp/mixingstation.cs`. 3767 lines (MixingStation, has InputSlots)
+- `/tmp/itemslot.cs`. 1007 lines (ItemSlot)
+- `/tmp/startmix.cs`. 679 lines (StartMixingStationBehaviour)
 
 These are local scratch decompiles, not committed to the repo.
 
@@ -130,7 +130,7 @@ written. We do not need to:
   iterations; caching may still help but is not load-bearing for
   performance).
 
-## Phase 2 -- predicate design (final, after /rtfm)
+## Phase 2. Predicate design (final, after /rtfm)
 
 The /rtfm pass against ProduceMore (Thunderstore decompiled source)
 revealed the canonical predicate. The original "walk InputSlots" idea
@@ -161,10 +161,10 @@ if a slot drains to zero mid-cook before the cook completes. The
 behaviour selector should re-evaluate after each cook iteration; on the
 next eval our predicate would see GetMixQuantity == 0 and block the
 next attempt. An already-wedged in-progress cook still has to be killed
-by the F8 hotkey -- the predicate prevents future wedges but does not
+by the F8 hotkey. The predicate prevents future wedges but does not
 unwedge an existing one.
 
-## Phase 3 -- Harmony wiring
+## Phase 3. Harmony wiring
 
 ```csharp
 [HarmonyPatch(typeof(StartMixingStationBehaviour), "CanCookStart")]
@@ -195,7 +195,7 @@ Postfix, not prefix. Vanilla makes the call, we only override `true` to
 Patch installation runs from `OnInitializeMelon` alongside the existing
 `TryHookEMployee` and `TryInstrumentCookRoutine` calls.
 
-## Phase 4 -- caching
+## Phase 4. Caching
 
 `CanCookStart` runs on the behaviour-selector hot path: ~10-30 Hz per
 chemist. Without caching, walking every storage container per call is
@@ -230,7 +230,7 @@ regardless of vanilla's call frequency, while keeping the worst-case
 ID (or InstanceID) and the recipe's identifier. Record the recipe's
 identifier path in Phase 1.
 
-## Phase 5 -- validation
+## Phase 5. Validation
 
 | Test | Setup | Expected | Confirms |
 | ---- | ----- | -------- | -------- |
@@ -241,7 +241,7 @@ identifier path in Phase 1.
 | 5. Multi-storage | Property has 3 storage containers, ingredient X spread across all 3 | Predicate sums correctly across containers | Storage enumeration covers full property |
 | 6. Partial availability | Recipe needs A, B, C. Storage has A and B but not C | Predicate returns false (not "1 of 3 ingredients is missing, close enough") | Predicate is strict on completeness |
 
-## Phase 6 -- known edge cases
+## Phase 6. Known edge cases
 
 To investigate during Phase 1, address as scope expands:
 
@@ -266,14 +266,14 @@ To investigate during Phase 1, address as scope expands:
 
 | Phase | Status |
 | ----- | ------ |
-| 0 -- cleanup | Done. Cooldown code removed from `EmployeeReset/src/Mod.cs` |
-| 1 -- reconnaissance | Done. `MixingStationConfiguration` has no recipe field; the slots are named (`ProductSlot`, `MixerSlot`, `OutputSlot`) not a generic `InputSlots` |
-| 1.5 -- /rtfm prior art | Done. ProduceMore mod's decompiled source confirmed the canonical predicate: `MixingStation.GetMixQuantity() > 0`. Their patch site is `MixingStation.CanStartMix`, not `StartMixingStationBehaviour.CanCookStart` |
-| 2 -- predicate design | Done (revised after /rtfm). Use `station.GetMixQuantity() <= 0` as the "block this" condition |
-| 3 -- Harmony wiring | Done (revised iteration 11). Single postfix on `MixingStation.CanStartMix` only. The CanCookStart belt patch was removed because it over-blocked the chemist's "move output" task |
-| 4 -- caching | Skipped. Each check is O(1) -- one call to GetMixQuantity. No cache needed |
-| 5 -- validation | Pending. Build is deployed; awaiting test on the existing save with output items waiting |
-| 6 -- edge cases | Open: networked-multiplayer (`RpcLogic___StartCook_2166136261`), MixingStationMk2 variant |
-| 7 -- regressions encountered | Iteration 10: deep instrumentation crashed game on launch. Iteration 11: CanCookStart belt patch over-blocked move-output. Iteration 12: targetStation null write in SmartReset stranded chemists with no station to interact with. All three regressions were over-aggressive; the right answer in each case was to remove a patch or write |
+| 0. Cleanup | Done. Cooldown code removed from `EmployeeReset/src/Mod.cs` |
+| 1. Reconnaissance | Done. `MixingStationConfiguration` has no recipe field; the slots are named (`ProductSlot`, `MixerSlot`, `OutputSlot`) not a generic `InputSlots` |
+| 1.5. /rtfm prior art | Done. ProduceMore mod's decompiled source confirmed the canonical predicate: `MixingStation.GetMixQuantity() > 0`. Their patch site is `MixingStation.CanStartMix`, not `StartMixingStationBehaviour.CanCookStart` |
+| 2. Predicate design | Done (revised after /rtfm). Use `station.GetMixQuantity() <= 0` as the "block this" condition |
+| 3. Harmony wiring | Done (revised iteration 11). Single postfix on `MixingStation.CanStartMix` only. The CanCookStart belt patch was removed because it over-blocked the chemist's "move output" task |
+| 4. Caching | Skipped. Each check is O(1). One call to GetMixQuantity. No cache needed |
+| 5. Validation | Pending. Build is deployed; awaiting test on the existing save with output items waiting |
+| 6. Edge cases | Open: networked-multiplayer (`RpcLogic___StartCook_2166136261`), MixingStationMk2 variant |
+| 7. Regressions encountered | Iteration 10: deep instrumentation crashed game on launch. Iteration 11: CanCookStart belt patch over-blocked move-output. Iteration 12: targetStation null write in SmartReset stranded chemists with no station to interact with. All three regressions were over-aggressive; the right answer in each case was to remove a patch or write |
 
 Update this table as each phase completes.
