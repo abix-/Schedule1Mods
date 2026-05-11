@@ -26,7 +26,7 @@ You play Schedule 1 with chemists. Two things keep going wrong:
    out.** The mixing animation keeps playing but no progress happens.
    The MelonLoader log fills with `NullReferenceException` errors. The
    chemist never recovers on their own. Even firing and rehiring doesn't
-   help -- the new chemist immediately gets stuck the same way.
+   help. The new chemist immediately gets stuck the same way.
 2. **The MelonLoader log spams `NullReferenceException` from
    `CookRoutine.MoveNext`** every ~30 seconds while a chemist is stuck,
    especially after loading a save.
@@ -124,15 +124,15 @@ If either slot is empty, GetMixQuantity returns 0.
 
 Despite this, vanilla's `MixingStation.CanStartMix` and
 `StartMixingStationBehaviour.CanCookStart` apparently still return true
-in cases where they should not -- the chemist starts a cook, immediately
+in cases where they should not. The chemist starts a cook, immediately
 wedges on an empty slot, and stays wedged.
 
 We install two Harmony postfixes:
 
-1. **`MixingStation.CanStartMix`** -- the canonical patch, matching the
+1. **`MixingStation.CanStartMix`**. The canonical patch, matching the
    predicate the [ProduceMore mod](https://thunderstore.io/c/schedule-i/p/lasersquid/ProduceMoreMono/source/)
    uses. Override `true` to `false` when `GetMixQuantity() <= 0`.
-2. **`StartMixingStationBehaviour.CanCookStart`** -- belt to the above
+2. **`StartMixingStationBehaviour.CanCookStart`**. Belt to the above
    suspenders. Same predicate, in case some vanilla code path calls
    CanCookStart directly without going through CanStartMix.
 
@@ -140,7 +140,7 @@ Both postfixes only ever flip `true` to `false`. We never override
 vanilla's `false`. The chemist can never become more eager because of
 us, only more conservative.
 
-Each check is O(1) -- a single call into `GetMixQuantity()`. No caching
+Each check is O(1). A single call into `GetMixQuantity()`. No caching
 needed.
 
 ## Technical: smart-reset (F8)
@@ -155,14 +155,14 @@ For each chemist (other roles are skipped on F8), in order:
    `Chemist.StartMixingStationBehaviour` (typed access, line 530 of
    decompiled Chemist). This catches wedged coroutines even when
    eMployee already nulled `_activeBehaviour`. On that component:
-   - `StopCook()` -- vanilla's intended end-of-cook hook.
-   - `targetStation.SetNPCUser(null)` -- release station reservation.
-   - `targetStation.CurrentMixOperation = null` -- clear in-progress mix.
-   - `StopAllCoroutines()` -- final guard against running coroutines.
-   - `Deactivate()` -- vanilla's stop-being-active cleanup hook.
+   - `StopCook()`. Vanilla's intended end-of-cook hook.
+   - `targetStation.SetNPCUser(null)`. Release station reservation.
+   - `targetStation.CurrentMixOperation = null`. Clear in-progress mix.
+   - `StopAllCoroutines()`. Final guard against running coroutines.
+   - `Deactivate()`. Vanilla's stop-being-active cleanup hook.
    - **Note (iteration 12):** we previously nulled
      `_targetStation_k__BackingField` here, but that broke the
-     chemist's "move output" task. Removed -- the canonical
+     chemist's "move output" task. Removed. The canonical
      `MixingStation.CanStartMix` gate now prevents new wedges
      without needing to disconnect the chemist from the station.
 3. If the active behaviour is `StartMixingStationBehaviour`, run the
@@ -187,7 +187,7 @@ revealed:
   SetNPCUser ...)]` -- vanilla's StopCook internally nulls the station's
   `NPCUserObject`.
 - `StartMixingStationBehaviour.Deactivate` has `[Calls(... StopCook ...)]`
-  AND `[Calls(... MixingStation, SetNPCUser ...)]` -- Deactivate calls
+  AND `[Calls(... MixingStation, SetNPCUser ...)]`. Deactivate calls
   StopCook AND directly nulls the station's NPCUserObject.
 - Our SmartReset called both StopCook and Deactivate. Auto-running
   SmartReset on every save load (which is what the postfix did) was
@@ -196,7 +196,7 @@ revealed:
 
 The postfix call site (`TryHookEMployee()` in `OnInitializeMelon`) is
 commented out. F8 still works as an explicit user-driven recovery
-hotkey -- but only when the user explicitly invokes it, not on every
+hotkey. But only when the user explicitly invokes it, not on every
 save load.
 
 A future iteration may re-enable an opt-in postfix once SmartReset
@@ -239,5 +239,5 @@ decompiled source](https://thunderstore.io/c/schedule-i/p/lasersquid/ProduceMore
 
 ## Related docs
 
-- [`../docs/employee-mod-bug-analysis.md`](../docs/employee-mod-bug-analysis.md) -- root cause analysis of both bugs, line-cited references, proposed upstream patch for the eMployee mod author
-- [`../docs/ingredient-gate-fix-plan.md`](../docs/ingredient-gate-fix-plan.md) -- the implementation plan for the ingredient gate, including Phase 1 reconnaissance findings
+- [`../docs/employee-mod-bug-analysis.md`](../docs/employee-mod-bug-analysis.md). Root cause analysis of both bugs, line-cited references, proposed upstream patch for the eMployee mod author
+- [`../docs/ingredient-gate-fix-plan.md`](../docs/ingredient-gate-fix-plan.md). The implementation plan for the ingredient gate, including Phase 1 reconnaissance findings
